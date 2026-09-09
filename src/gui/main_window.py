@@ -5,7 +5,7 @@ Main Window application container for 2-Gate IMS Control System.
 from typing import Optional
 import numpy as np
 from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QSplitter, QMessageBox
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 
 from .widgets.control_panel import ControlPanelWidget
 from .widgets.pulse_diagram import PulseDiagramWidget
@@ -178,7 +178,16 @@ class MainWindow(QMainWindow):
 
                 if self.sweep_step_idx < len(self.sweep_delays):
                     next_delay = self.sweep_delays[self.sweep_step_idx]
-                    self.daq.update_gate2_delay(next_delay)
+                    # Let the current Gate 2 pulse finish before rebuilding its
+                    # finite task for the next sweep delay.
+                    update_delay_ms = max(
+                        1,
+                        int(active_delay_ms + self.current_config.gate2_width_ms + 1)
+                    )
+                    QTimer.singleShot(
+                        update_delay_ms,
+                        lambda delay=next_delay: self._apply_sweep_delay(delay)
+                    )
                     self.diagram_panel.update_diagram(self.current_config, next_delay)
                     self.status_panel.update_sweep_progress(
                         self.sweep_step_idx + 1,
@@ -189,6 +198,11 @@ class MainWindow(QMainWindow):
                     # Sweep finished!
                     self.status_panel.log("Sweep sequence completed successfully.")
                     self.stop_system()
+
+    def _apply_sweep_delay(self, delay_ms: float):
+        """Apply a sweep delay after the active Gate 2 pulse is complete."""
+        if self.daq and self.daq.is_running and self.current_config.mode == OperationalMode.SWEEP:
+            self.daq.update_gate2_delay(delay_ms)
 
     def _on_daq_error(self, message: str):
         self.status_panel.log(f"ERROR: {message}")

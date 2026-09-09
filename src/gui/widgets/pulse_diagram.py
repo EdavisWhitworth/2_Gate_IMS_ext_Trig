@@ -62,35 +62,27 @@ class PulseDiagramWidget(QWidget):
         else:
             g2_delay = config.sweep_start_delay_ms
 
-        # Build high-resolution pulse time points
-        t = np.array([
-            0.0,
-            0.0, 0.05, 0.05,            # Trigger pulse at t=0 (0.05 ms width preview)
-            g1_width, g1_width,          # Gate 1 pulse ends
-            g2_delay, g2_delay,          # Gate 2 pulse starts
-            g2_delay + g2_width, g2_delay + g2_width, # Gate 2 pulse ends
-            scan_time
-        ])
-        t = np.sort(np.unique(t))
+        def pulse_waveform(start: float, width: float, baseline: float):
+            end = min(scan_time, start + width)
+            times = np.array([0.0, start, start, end, end, scan_time])
+            levels = np.array([
+                baseline,
+                baseline,
+                baseline + 0.8,
+                baseline + 0.8,
+                baseline,
+                baseline,
+            ])
+            return times, levels
 
-        # 1. External Trigger waveform (Y base = 0)
-        trig_y = np.zeros_like(t)
-        trig_mask = (t >= 0.0) & (t <= 0.05)
-        trig_y[trig_mask] = 0.8
-        
-        # 2. Gate 1 waveform (Y base = 1)
-        g1_y = np.ones_like(t) * 1.0
-        g1_mask = (t >= 0.0) & (t <= g1_width)
-        g1_y[g1_mask] = 1.8
+        # Explicit duplicate transition points create rectangular TTL pulses.
+        trig_t, trig_y = pulse_waveform(0.0, 0.05, 0.0)
+        g1_t, g1_y = pulse_waveform(0.0, g1_width, 1.0)
+        g2_t, g2_y = pulse_waveform(g2_delay, g2_width, 2.0)
 
-        # 3. Gate 2 waveform (Y base = 2)
-        g2_y = np.ones_like(t) * 2.0
-        g2_mask = (t >= g2_delay) & (t <= (g2_delay + g2_width))
-        g2_y[g2_mask] = 2.8
-
-        self.curve_trig.setData(t, trig_y)
-        self.curve_g1.setData(t, g1_y)
-        self.curve_g2.setData(t, g2_y)
+        self.curve_trig.setData(trig_t, trig_y)
+        self.curve_g1.setData(g1_t, g1_y)
+        self.curve_g2.setData(g2_t, g2_y)
 
         self.delay_line.setValue(g2_delay)
         self.plot_widget.setXRange(-0.5, scan_time * 1.05)

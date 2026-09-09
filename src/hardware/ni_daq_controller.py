@@ -187,28 +187,8 @@ class NIDAQController(AbstractDAQController):
                 self._task_g1.stop()
 
             self._task_g2.stop()
-            self._task_g2.close()
-
-            dev = config.device_name
-            g2_width_sec = max(0.000001, config.gate2_width_ms / 1000.0)
-            self._task_g2 = nidaqmx.Task("Gate2_CTR1_Task")
-            self._task_g2.co_channels.add_co_pulse_chan_time(
-                counter=f"{dev}/{config.gate2_counter}",
-                units=TimeUnits.SECONDS,
-                idle_state=Level.LOW,
-                initial_delay=delay_sec,
-                low_time=0.0001,
-                high_time=g2_width_sec
-            )
-            self._task_g2.timing.cfg_implicit_timing(
-                sample_mode=AcquisitionType.FINITE,
-                samps_per_chan=1
-            )
-            self._task_g2.triggers.start_trigger.cfg_dig_edge_start_trig(
-                trigger_source=f"/{dev}/{config.gate1_counter}InternalOutput",
-                trigger_edge=Edge.RISING
-            )
-            self._task_g2.triggers.start_trigger.retriggerable = True
+            self._task_g2.control(TaskMode.TASK_UNRESERVE)
+            self._task_g2.co_channels[0].co_pulse_time_initial_delay = delay_sec
             self._task_g2.control(TaskMode.TASK_COMMIT)
             self._task_g2.start()
 
@@ -233,13 +213,18 @@ class NIDAQController(AbstractDAQController):
         if not self.is_running:
             return
 
-        if self._task_g1 is not None and self.current_config is not None and self.current_config.test_mode:
+        if (
+            self._task_g1 is not None
+            and self._task_g2 is not None
+            and self.current_config is not None
+            and self.current_config.test_mode
+        ):
             try:
-                # Reset both finite tasks so Gate 2 is armed for every simulated
-                # Gate 1 pulse and cannot fall out of phase after one trigger.
+                # Test Mode owns each pulse set explicitly. Restarting both
+                # finite tasks reapplies Gate 2's initial delay every time.
                 self._task_g2.stop()
-                self._task_g2.start()
                 self._task_g1.stop()
+                self._task_g2.start()
                 self._task_g1.start()
             except Exception as e:
                 self.signals.error_occurred.emit(f"Error generating test trigger: {str(e)}")
