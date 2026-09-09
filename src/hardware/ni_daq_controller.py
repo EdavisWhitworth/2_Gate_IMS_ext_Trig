@@ -111,13 +111,15 @@ class NIDAQController(AbstractDAQController):
                     units=TimeUnits.SECONDS,
                     idle_state=Level.LOW,
                     initial_delay=(
-                        0.000001
-                        if config.mode == OperationalMode.WINDOWED
-                        else g2_delay_sec
+                        g2_delay_sec
+                        if config.mode == OperationalMode.SWEEP
+                        or config.test_mode
+                        else 0.000001
                     ),
                     low_time=(
                         g2_delay_sec
                         if config.mode == OperationalMode.WINDOWED
+                        and not config.test_mode
                         else 0.0001
                     ),
                     high_time=0.0001
@@ -254,8 +256,8 @@ class NIDAQController(AbstractDAQController):
                     counter=f"{dev}/{config.delay_counter}",
                     units=TimeUnits.SECONDS,
                     idle_state=Level.LOW,
-                    initial_delay=0.000001,
-                    low_time=delay_sec,
+                    initial_delay=(delay_sec if config.test_mode else 0.000001),
+                    low_time=(0.0001 if config.test_mode else delay_sec),
                     high_time=0.0001
                 )
                 self._task_delay.timing.cfg_implicit_timing(
