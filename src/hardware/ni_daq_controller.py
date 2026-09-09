@@ -3,6 +3,7 @@ Production DAQmx hardware controller for NI-6341 counter/timer pulse generation.
 """
 
 from typing import Optional
+import time
 from PyQt6.QtCore import QTimer
 from .daq_interface import AbstractDAQController
 from ..models.config import ScanConfig, OperationalMode
@@ -38,6 +39,7 @@ class NIDAQController(AbstractDAQController):
         self._test_timer = QTimer()
         self._test_timer.timeout.connect(self._on_auto_trigger)
         self.current_delay_ms = 1.0
+        self._last_sweep_hardware_trigger_time = 0.0
 
     @staticmethod
     def is_hardware_available() -> bool:
@@ -58,6 +60,7 @@ class NIDAQController(AbstractDAQController):
 
         self.current_config = config
         self.trigger_count = 0
+        self._last_sweep_hardware_trigger_time = 0.0
 
         # Close existing tasks if open
         self.stop_session()
@@ -305,6 +308,15 @@ class NIDAQController(AbstractDAQController):
     def _on_hardware_trigger(self, task_handle, signal_type, callback_data):
         """Forward each Gate 1 counter output event to the GUI."""
         if self.is_running and self.current_config is not None and not self.current_config.test_mode:
+            if self.current_config.mode == OperationalMode.SWEEP:
+                now = time.monotonic()
+                minimum_interval = max(
+                    0.001,
+                    self.current_config.scan_time_ms / 1000.0 * 0.9
+                )
+                if now - self._last_sweep_hardware_trigger_time < minimum_interval:
+                    return 0
+                self._last_sweep_hardware_trigger_time = now
             self.trigger_count += 1
             self.signals.trigger_occurred.emit(self.trigger_count, self.current_delay_ms)
         return 0
