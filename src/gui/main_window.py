@@ -202,9 +202,7 @@ class MainWindow(QMainWindow):
     def _apply_sweep_delay(self, delay_ms: float):
         """Apply a sweep delay after the active Gate 2 pulse is complete."""
         if self.daq and self.daq.is_running and self.current_config.mode == OperationalMode.SWEEP:
-            self.current_config.gate2_delay_ms = delay_ms
-            if not self.daq.update_gate2_delay(delay_ms):
-                self.status_panel.log(f"ERROR: Failed to apply sweep delay {delay_ms:.2f} ms.")
+            self.daq.update_gate2_delay(delay_ms)
 
     def _on_daq_error(self, message: str):
         self.status_panel.log(f"ERROR: {message}")
