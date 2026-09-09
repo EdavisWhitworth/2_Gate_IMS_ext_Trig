@@ -39,3 +39,9 @@ PyQt6 desktop control GUI for a two-gate ion mobility spectrometry (IMS) system.
 From the repository root, install dependencies with `python -m pip install -r requirements.txt`, then run the GUI with `python main.py`. For a hardware-free smoke run, select `Mock DAQ (Simulation)` and enable `Test Mode (Auto Trigger)`. Check Python syntax with `python -m compileall main.py src`.
 
 There are currently no automated tests in the repository. Changes affecting sweep progression, signal handling, or DAQ task setup should be manually checked in Mock DAQ mode and, when available, on NI hardware.
+
+## Additional-Counter Branch
+
+The `additional-counters` branch uses three counters: `ctr0` for Gate 1, `ctr2` as the delayed timing stage, and `ctr1` for Gate 2. On an NI-6341/USB-6341-style X-Series device, the default counter output PFI terminals are typically `ctr0 -> PFI12`, `ctr1 -> PFI13`, `ctr2 -> PFI14`, and `ctr3 -> PFI15`; verify the exact device pinout before wiring.
+
+Required signal routing is internal in DAQmx: Gate 1 (`ctr0InternalOutput`) triggers the delay stage (`ctr2`), and the delay stage (`ctr2InternalOutput`) triggers Gate 2 (`ctr1`). The external trigger remains `/Dev1/PFI0` into Gate 1. Connect the physical outputs as `PFI12` for Gate 1 and `PFI13` for Gate 2; `PFI14` is the optional exposed delay-stage output for probing, while the internal routes should be used for counter-to-counter triggering.
