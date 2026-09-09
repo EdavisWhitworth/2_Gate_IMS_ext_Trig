@@ -1,0 +1,4 @@
+PyQt6>=6.4.0
+nidaqmx>=0.6.5
+pyqtgraph>=0.13.0
+numpy>=1.20.0
