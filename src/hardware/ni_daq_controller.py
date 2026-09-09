@@ -14,6 +14,7 @@ try:
         TimeUnits,
         Level,
         Edge,
+        Signal,
         TaskMode,
     )
     HAS_NIDAQMX = True
@@ -96,6 +97,10 @@ class NIDAQController(AbstractDAQController):
                     trigger_edge=Edge.RISING
                 )
                 self._task_g1.triggers.start_trigger.retriggerable = True
+                self._task_g1.register_signal_event(
+                    Signal.COUNTER_OUTPUT_EVENT,
+                    self._on_hardware_trigger
+                )
 
             # 2. Configure Counter 2 (delayed timing stage)
             self._task_delay = nidaqmx.Task("Gate2_Delay_CTR2_Task")
@@ -149,10 +154,10 @@ class NIDAQController(AbstractDAQController):
             # Arm the downstream tasks before starting Gate 1.
             self._task_g2.start()
             self._task_delay.start()
+            self.is_running = True
             if not config.test_mode:
                 self._task_g1.start()
 
-            self.is_running = True
             self.signals.status_changed.emit(
                 f"NI-6341 Active ({config.mode.value.capitalize()} Mode" + 
                 (" - Auto Trigger" if config.test_mode else " - Armed on PFI0") + ")"
@@ -241,6 +246,13 @@ class NIDAQController(AbstractDAQController):
     def trigger_software(self) -> None:
         if self.is_running:
             self._on_auto_trigger()
+
+    def _on_hardware_trigger(self, task_handle, signal_type, callback_data):
+        """Forward each Gate 1 counter output event to the GUI."""
+        if self.is_running and self.current_config is not None and not self.current_config.test_mode:
+            self.trigger_count += 1
+            self.signals.trigger_occurred.emit(self.trigger_count, self.current_delay_ms)
+        return 0
 
     def _on_auto_trigger(self) -> None:
         if not self.is_running:
