@@ -3,6 +3,7 @@ Production DAQmx hardware controller for NI-6341 counter/timer pulse generation.
 """
 
 from typing import Optional
+import time
 from PyQt6.QtCore import QTimer
 from .daq_interface import AbstractDAQController
 from ..models.config import ScanConfig, OperationalMode
@@ -38,6 +39,7 @@ class NIDAQController(AbstractDAQController):
         self._test_timer = QTimer()
         self._test_timer.timeout.connect(self._on_auto_trigger)
         self.current_delay_ms = 1.0
+        self._last_hardware_trigger_time = 0.0
 
     @staticmethod
     def is_hardware_available() -> bool:
@@ -58,6 +60,7 @@ class NIDAQController(AbstractDAQController):
 
         self.current_config = config
         self.trigger_count = 0
+        self._last_hardware_trigger_time = 0.0
 
         # Close existing tasks if open
         self.stop_session()
@@ -108,8 +111,8 @@ class NIDAQController(AbstractDAQController):
                 counter=f"{dev}/{config.delay_counter}",
                 units=TimeUnits.SECONDS,
                 idle_state=Level.LOW,
-                initial_delay=g2_delay_sec,
-                low_time=0.0001,
+                initial_delay=0.000001,
+                low_time=g2_delay_sec,
                 high_time=0.0001
             )
             self._task_delay.timing.cfg_implicit_timing(
@@ -180,6 +183,7 @@ class NIDAQController(AbstractDAQController):
     def stop_session(self) -> None:
         self._test_timer.stop()
         self.is_running = False
+        self._last_hardware_trigger_time = 0.0
 
         if self._task_g1 is not None:
             try:
@@ -225,8 +229,27 @@ class NIDAQController(AbstractDAQController):
 
             self._task_g2.stop()
             self._task_delay.stop()
-            self._task_delay.control(TaskMode.TASK_UNRESERVE)
-            self._task_delay.co_channels[0].co_pulse_time_initial_delay = delay_sec
+            self._task_delay.close()
+
+            dev = config.device_name
+            self._task_delay = nidaqmx.Task("Gate2_Delay_CTR2_Task")
+            self._task_delay.co_channels.add_co_pulse_chan_time(
+                counter=f"{dev}/{config.delay_counter}",
+                units=TimeUnits.SECONDS,
+                idle_state=Level.LOW,
+                initial_delay=0.000001,
+                low_time=delay_sec,
+                high_time=0.0001
+            )
+            self._task_delay.timing.cfg_implicit_timing(
+                sample_mode=AcquisitionType.FINITE,
+                samps_per_chan=1
+            )
+            self._task_delay.triggers.start_trigger.cfg_dig_edge_start_trig(
+                trigger_source=f"/{dev}/{config.gate1_counter}InternalOutput",
+                trigger_edge=Edge.RISING
+            )
+            self._task_delay.triggers.start_trigger.retriggerable = True
             self._task_delay.control(TaskMode.TASK_COMMIT)
             self._task_g2.start()
             self._task_delay.start()
@@ -250,6 +273,14 @@ class NIDAQController(AbstractDAQController):
     def _on_hardware_trigger(self, task_handle, signal_type, callback_data):
         """Forward each Gate 1 counter output event to the GUI."""
         if self.is_running and self.current_config is not None and not self.current_config.test_mode:
+            now = time.monotonic()
+            minimum_interval = max(
+                0.001,
+                self.current_config.scan_time_ms / 1000.0 * 0.9
+            )
+            if now - self._last_hardware_trigger_time < minimum_interval:
+                return 0
+            self._last_hardware_trigger_time = now
             self.trigger_count += 1
             self.signals.trigger_occurred.emit(self.trigger_count, self.current_delay_ms)
         return 0
