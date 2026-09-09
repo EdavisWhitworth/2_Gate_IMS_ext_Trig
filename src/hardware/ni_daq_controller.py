@@ -112,7 +112,7 @@ class NIDAQController(AbstractDAQController):
                 units=TimeUnits.SECONDS,
                 idle_state=Level.LOW,
                 initial_delay=0.000001,
-                low_time=max(0.0001, g2_delay_sec),
+                low_time=g2_delay_sec,
                 high_time=0.0001
             )
             self._task_delay.timing.cfg_implicit_timing(
@@ -238,7 +238,7 @@ class NIDAQController(AbstractDAQController):
                 units=TimeUnits.SECONDS,
                 idle_state=Level.LOW,
                 initial_delay=0.000001,
-                low_time=max(0.0001, delay_sec),
+                low_time=delay_sec,
                 high_time=0.0001
             )
             self._task_delay.timing.cfg_implicit_timing(
