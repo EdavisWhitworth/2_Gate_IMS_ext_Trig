@@ -102,25 +102,26 @@ class NIDAQController(AbstractDAQController):
                     self._on_hardware_trigger
                 )
 
-            # 2. Configure Counter 2 (delayed timing stage)
-            self._task_delay = nidaqmx.Task("Gate2_Delay_CTR2_Task")
-            self._task_delay.co_channels.add_co_pulse_chan_time(
-                counter=f"{dev}/{config.delay_counter}",
-                units=TimeUnits.SECONDS,
-                idle_state=Level.LOW,
-                initial_delay=g2_delay_sec,
-                low_time=0.0001,
-                high_time=0.0001
-            )
-            self._task_delay.timing.cfg_implicit_timing(
-                sample_mode=AcquisitionType.FINITE,
-                samps_per_chan=1
-            )
-            self._task_delay.triggers.start_trigger.cfg_dig_edge_start_trig(
-                trigger_source=f"/{dev}/{config.gate1_counter}InternalOutput",
-                trigger_edge=Edge.RISING
-            )
-            self._task_delay.triggers.start_trigger.retriggerable = True
+            if config.mode == OperationalMode.SWEEP:
+                # Sweep Mode uses the additional counter as a delay stage.
+                self._task_delay = nidaqmx.Task("Gate2_Delay_CTR2_Task")
+                self._task_delay.co_channels.add_co_pulse_chan_time(
+                    counter=f"{dev}/{config.delay_counter}",
+                    units=TimeUnits.SECONDS,
+                    idle_state=Level.LOW,
+                    initial_delay=g2_delay_sec,
+                    low_time=0.0001,
+                    high_time=0.0001
+                )
+                self._task_delay.timing.cfg_implicit_timing(
+                    sample_mode=AcquisitionType.FINITE,
+                    samps_per_chan=1
+                )
+                self._task_delay.triggers.start_trigger.cfg_dig_edge_start_trig(
+                    trigger_source=f"/{dev}/{config.gate1_counter}InternalOutput",
+                    trigger_edge=Edge.RISING
+                )
+                self._task_delay.triggers.start_trigger.retriggerable = True
 
             # 3. Configure Counter 1 (Gate 2 output)
             self._task_g2 = nidaqmx.Task("Gate2_CTR1_Task")
@@ -129,7 +130,11 @@ class NIDAQController(AbstractDAQController):
                 counter=ctr1_path,
                 units=TimeUnits.SECONDS,
                 idle_state=Level.LOW,
-                initial_delay=0.000001,
+                initial_delay=(
+                    0.000001
+                    if config.mode == OperationalMode.SWEEP
+                    else g2_delay_sec
+                ),
                 low_time=0.0001,
                 high_time=g2_width_sec
             )
@@ -138,9 +143,14 @@ class NIDAQController(AbstractDAQController):
                 samps_per_chan=1
             )
 
-            # Gate 2 triggers on the rising edge of the delayed timing stage.
+            # Windowed Mode triggers Gate 2 directly from Gate 1; Sweep Mode
+            # routes it through the additional delay counter.
             self._task_g2.triggers.start_trigger.cfg_dig_edge_start_trig(
-                trigger_source=f"/{dev}/{config.delay_counter}InternalOutput",
+                trigger_source=(
+                    f"/{dev}/{config.delay_counter}InternalOutput"
+                    if config.mode == OperationalMode.SWEEP
+                    else f"/{dev}/{config.gate1_counter}InternalOutput"
+                ),
                 trigger_edge=Edge.RISING
             )
             self._task_g2.triggers.start_trigger.retriggerable = True
@@ -148,12 +158,14 @@ class NIDAQController(AbstractDAQController):
             # Commit both tasks before starting either one. This ensures Gate 2
             # is fully armed before Gate 1 can respond to the first external edge.
             self._task_g2.control(TaskMode.TASK_COMMIT)
-            self._task_delay.control(TaskMode.TASK_COMMIT)
+            if self._task_delay is not None:
+                self._task_delay.control(TaskMode.TASK_COMMIT)
             self._task_g1.control(TaskMode.TASK_COMMIT)
 
             # Arm the downstream tasks before starting Gate 1.
             self._task_g2.start()
-            self._task_delay.start()
+            if self._task_delay is not None:
+                self._task_delay.start()
             self.is_running = True
             if not config.test_mode:
                 self._task_g1.start()
@@ -210,7 +222,7 @@ class NIDAQController(AbstractDAQController):
     def update_gate2_delay(self, delay_ms: float) -> bool:
         """Dynamically reconfigures Counter 1 initial delay."""
         self.current_delay_ms = delay_ms
-        if not self.is_running or self._task_delay is None:
+        if not self.is_running or self._task_g2 is None:
             return True
 
         delay_sec = max(0.000001, delay_ms / 1000.0)
@@ -224,6 +236,17 @@ class NIDAQController(AbstractDAQController):
                 self._task_g1.stop()
 
             self._task_g2.stop()
+            if config.mode == OperationalMode.WINDOWED:
+                self._task_g2.control(TaskMode.TASK_UNRESERVE)
+                self._task_g2.co_channels[0].co_pulse_time_initial_delay = delay_sec
+                self._task_g2.control(TaskMode.TASK_COMMIT)
+                self._task_g2.start()
+                if gate1_was_running:
+                    self._task_g1.start()
+                return True
+
+            if self._task_delay is None:
+                return False
             self._task_delay.stop()
             self._task_delay.control(TaskMode.TASK_UNRESERVE)
             self._task_delay.co_channels[0].co_pulse_time_initial_delay = delay_sec
@@ -258,21 +281,14 @@ class NIDAQController(AbstractDAQController):
         if not self.is_running:
             return
 
-        if (
-            self._task_g1 is not None
-            and self._task_g2 is not None
-            and self._task_delay is not None
-            and self.current_config is not None
-            and self.current_config.test_mode
-        ):
+        if self._task_g1 is not None and self._task_g2 is not None and self.current_config is not None and self.current_config.test_mode:
             try:
-                # Test Mode owns each pulse set explicitly. Restarting both
-                # finite tasks reapplies Gate 2's initial delay every time.
                 self._task_g1.stop()
-                self._task_delay.stop()
                 self._task_g2.stop()
                 self._task_g2.start()
-                self._task_delay.start()
+                if self._task_delay is not None:
+                    self._task_delay.stop()
+                    self._task_delay.start()
                 self._task_g1.start()
             except Exception as e:
                 self.signals.error_occurred.emit(f"Error generating test trigger: {str(e)}")
