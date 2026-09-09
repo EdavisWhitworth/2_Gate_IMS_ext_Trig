@@ -14,6 +14,7 @@ try:
         TimeUnits,
         Level,
         Edge,
+        TaskMode,
     )
     HAS_NIDAQMX = True
 except ImportError:
@@ -73,16 +74,17 @@ class NIDAQController(AbstractDAQController):
             # 1. Configure Counter 0 (Gate 1)
             self._task_g1 = nidaqmx.Task("Gate1_CTR0_Task")
             ctr0_path = f"{dev}/{config.gate1_counter}"
-            self._task_g1.co_channels.add_co_pulse_time(
+            self._task_g1.co_channels.add_co_pulse_chan_time(
                 counter=ctr0_path,
                 units=TimeUnits.SECONDS,
                 idle_state=Level.LOW,
                 initial_delay=0.0,
-                low_time=0.0001, # Minimum low time between triggers
+                low_time=0.0001,
                 high_time=g1_width_sec
             )
             self._task_g1.timing.cfg_implicit_timing(
-                sample_mode=AcquisitionType.CONTINUOUS
+                sample_mode=AcquisitionType.FINITE,
+                samps_per_chan=1
             )
 
             if not config.test_mode:
@@ -96,7 +98,7 @@ class NIDAQController(AbstractDAQController):
             # 2. Configure Counter 1 (Gate 2)
             self._task_g2 = nidaqmx.Task("Gate2_CTR1_Task")
             ctr1_path = f"{dev}/{config.gate2_counter}"
-            self._task_g2.co_channels.add_co_pulse_time(
+            self._task_g2.co_channels.add_co_pulse_chan_time(
                 counter=ctr1_path,
                 units=TimeUnits.SECONDS,
                 idle_state=Level.LOW,
@@ -105,19 +107,26 @@ class NIDAQController(AbstractDAQController):
                 high_time=g2_width_sec
             )
             self._task_g2.timing.cfg_implicit_timing(
-                sample_mode=AcquisitionType.CONTINUOUS
+                sample_mode=AcquisitionType.FINITE,
+                samps_per_chan=1
             )
 
-            # Gate 2 triggers on rising edge of Gate 1 output (/Dev1/ctr0InternalOutput)
+            # Gate 2 triggers on the rising edge of Gate 1's internal output.
             self._task_g2.triggers.start_trigger.cfg_dig_edge_start_trig(
-                trigger_source=f"/{dev}/ctr0InternalOutput",
+                trigger_source=f"/{dev}/{config.gate1_counter}InternalOutput",
                 trigger_edge=Edge.RISING
             )
             self._task_g2.triggers.start_trigger.retriggerable = True
 
+            # Commit both tasks before starting either one. This ensures Gate 2
+            # is fully armed before Gate 1 can respond to the first external edge.
+            self._task_g2.control(TaskMode.TASK_COMMIT)
+            self._task_g1.control(TaskMode.TASK_COMMIT)
+
             # Start tasks in reverse order (Gate 2 first so it's armed when Gate 1 fires)
             self._task_g2.start()
-            self._task_g1.start()
+            if not config.test_mode:
+                self._task_g1.start()
 
             self.is_running = True
             self.signals.status_changed.emit(
@@ -168,10 +177,43 @@ class NIDAQController(AbstractDAQController):
             return True
 
         delay_sec = max(0.000001, delay_ms / 1000.0)
+        config = self.current_config
+        if config is None:
+            return False
+
         try:
+            gate1_was_running = self._task_g1 is not None and not config.test_mode
+            if self._task_g1 is not None:
+                self._task_g1.stop()
+
             self._task_g2.stop()
-            self._task_g2.co_channels[0].co_pulse_time_initial_delay = delay_sec
+            self._task_g2.close()
+
+            dev = config.device_name
+            g2_width_sec = max(0.000001, config.gate2_width_ms / 1000.0)
+            self._task_g2 = nidaqmx.Task("Gate2_CTR1_Task")
+            self._task_g2.co_channels.add_co_pulse_chan_time(
+                counter=f"{dev}/{config.gate2_counter}",
+                units=TimeUnits.SECONDS,
+                idle_state=Level.LOW,
+                initial_delay=delay_sec,
+                low_time=0.0001,
+                high_time=g2_width_sec
+            )
+            self._task_g2.timing.cfg_implicit_timing(
+                sample_mode=AcquisitionType.FINITE,
+                samps_per_chan=1
+            )
+            self._task_g2.triggers.start_trigger.cfg_dig_edge_start_trig(
+                trigger_source=f"/{dev}/{config.gate1_counter}InternalOutput",
+                trigger_edge=Edge.RISING
+            )
+            self._task_g2.triggers.start_trigger.retriggerable = True
+            self._task_g2.control(TaskMode.TASK_COMMIT)
             self._task_g2.start()
+
+            if gate1_was_running:
+                self._task_g1.start()
             return True
         except Exception as e:
             self.signals.error_occurred.emit(f"Error updating Gate 2 delay: {str(e)}")
@@ -190,6 +232,18 @@ class NIDAQController(AbstractDAQController):
     def _on_auto_trigger(self) -> None:
         if not self.is_running:
             return
+
+        if self._task_g1 is not None and self.current_config is not None and self.current_config.test_mode:
+            try:
+                # Reset both finite tasks so Gate 2 is armed for every simulated
+                # Gate 1 pulse and cannot fall out of phase after one trigger.
+                self._task_g2.stop()
+                self._task_g2.start()
+                self._task_g1.stop()
+                self._task_g1.start()
+            except Exception as e:
+                self.signals.error_occurred.emit(f"Error generating test trigger: {str(e)}")
+                return
+
         self.trigger_count += 1
-        # If in test mode without external trigger, we can write a pulse or trigger event
         self.signals.trigger_occurred.emit(self.trigger_count, self.current_delay_ms)

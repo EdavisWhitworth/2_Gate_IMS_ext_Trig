@@ -67,6 +67,18 @@ class SliderSpinBox(QWidget):
             self.spin.setValue(val)
             self.slider.setValue(int(val * self.scale))
 
+    def setRange(self, min_val: float, max_val: float):
+        self.min_val = min_val
+        self.max_val = max(max_val, min_val)
+        with QSignalBlocker(self.slider), QSignalBlocker(self.spin):
+            self.slider.setRange(
+                int(self.min_val * self.scale),
+                int(self.max_val * self.scale)
+            )
+            self.spin.setRange(self.min_val, self.max_val)
+            self.spin.setValue(self.spin.value())
+            self.slider.setValue(int(self.spin.value() * self.scale))
+
 
 class ControlPanelWidget(QWidget):
     """Main control panel containing scan parameters and hardware controls."""
@@ -86,15 +98,25 @@ class ControlPanelWidget(QWidget):
 
         # Hardware & Execution Mode Box
         hw_group = QGroupBox("Hardware & Execution Settings")
-        hw_layout = QHBoxLayout(hw_group)
+        hw_layout = QVBoxLayout(hw_group)
+        hw_top_layout = QHBoxLayout()
 
-        hw_layout.addWidget(QLabel("Device Driver:"))
+        hw_top_layout.addWidget(QLabel("Device Driver:"))
         self.combo_hardware = QComboBox()
         self.combo_hardware.addItems(["NI-6341 (Hardware DAQmx)", "Mock DAQ (Simulation)"])
-        hw_layout.addWidget(self.combo_hardware)
+        hw_top_layout.addWidget(self.combo_hardware)
 
         self.check_test_mode = QCheckBox("Test Mode (Auto Trigger)")
-        hw_layout.addWidget(self.check_test_mode)
+        hw_top_layout.addWidget(self.check_test_mode)
+        hw_top_layout.addStretch()
+        hw_layout.addLayout(hw_top_layout)
+
+        self.ss_test_trigger_period = SliderSpinBox(
+            "Test Trigger Interval:", 20.0, 5000.0, 250.0,
+            step=10.0, decimals=0
+        )
+        self.ss_test_trigger_period.setVisible(False)
+        hw_layout.addWidget(self.ss_test_trigger_period)
 
         main_layout.addWidget(hw_group)
 
@@ -105,10 +127,12 @@ class ControlPanelWidget(QWidget):
         self.tab_windowed = QWidget()
         win_layout = QVBoxLayout(self.tab_windowed)
 
+        self.ss_scan_time = SliderSpinBox("Total Experimental Time:", 1.0, 100.0, 50.0, step=0.05)
         self.ss_g1_width = SliderSpinBox("Gate 1 Width:", 0.01, 10.0, 0.20, step=0.01)
         self.ss_g2_delay = SliderSpinBox("Gate 2 Initial Delay:", 0.0, 100.0, 1.00, step=0.05)
         self.ss_g2_width = SliderSpinBox("Gate 2 Width:", 0.01, 10.0, 0.20, step=0.01)
 
+        win_layout.addWidget(self.ss_scan_time)
         win_layout.addWidget(self.ss_g1_width)
         win_layout.addWidget(self.ss_g2_delay)
         win_layout.addWidget(self.ss_g2_width)
@@ -163,11 +187,13 @@ class ControlPanelWidget(QWidget):
         # Connect signals for live updates
         self.tab_widget.currentChanged.connect(lambda _: self.config_changed.emit())
         self.combo_hardware.currentIndexChanged.connect(lambda _: self.config_changed.emit())
-        self.check_test_mode.toggled.connect(lambda _: self.config_changed.emit())
+        self.check_test_mode.toggled.connect(self._on_test_mode_toggled)
+        self.ss_test_trigger_period.valueChanged.connect(lambda _: self.config_changed.emit())
 
+        self.ss_scan_time.valueChanged.connect(self._on_scan_time_changed)
         self.ss_g1_width.valueChanged.connect(lambda _: self.config_changed.emit())
-        self.ss_g2_delay.valueChanged.connect(lambda _: self.config_changed.emit())
-        self.ss_g2_width.valueChanged.connect(lambda _: self.config_changed.emit())
+        self.ss_g2_delay.valueChanged.connect(self._on_gate2_parameter_changed)
+        self.ss_g2_width.valueChanged.connect(self._on_gate2_parameter_changed)
 
         self.ss_sw_g1_width.valueChanged.connect(lambda _: self.config_changed.emit())
         self.ss_sw_g2_width.valueChanged.connect(lambda _: self.config_changed.emit())
@@ -179,14 +205,38 @@ class ControlPanelWidget(QWidget):
         self.btn_start.clicked.connect(self.start_requested.emit)
         self.btn_stop.clicked.connect(self.stop_requested.emit)
 
+        self._update_windowed_gate_limits()
+
+    def _on_scan_time_changed(self, _: float):
+        self._update_windowed_gate_limits()
+        self.config_changed.emit()
+
+    def _on_test_mode_toggled(self, enabled: bool):
+        self.ss_test_trigger_period.setVisible(enabled)
+        self.config_changed.emit()
+
+    def _on_gate2_parameter_changed(self, _: float):
+        self._update_windowed_gate_limits()
+        self.config_changed.emit()
+
+    def _update_windowed_gate_limits(self):
+        total_time = self.ss_scan_time.value()
+        delay_max = max(0.0, total_time - self.ss_g2_width.value())
+        self.ss_g2_delay.setRange(0.0, delay_max)
+
+        width_max = max(0.01, total_time - self.ss_g2_delay.value())
+        self.ss_g2_width.setRange(0.01, width_max)
+
     def get_config(self) -> ScanConfig:
         """Construct a ScanConfig dataclass from current UI controls."""
         is_windowed = self.tab_widget.currentIndex() == 0
         cfg = ScanConfig()
         cfg.mode = OperationalMode.WINDOWED if is_windowed else OperationalMode.SWEEP
         cfg.test_mode = self.check_test_mode.isChecked()
+        cfg.auto_trigger_period_ms = self.ss_test_trigger_period.value()
 
         if is_windowed:
+            cfg.scan_time_ms = self.ss_scan_time.value()
             cfg.gate1_width_ms = self.ss_g1_width.value()
             cfg.gate2_delay_ms = self.ss_g2_delay.value()
             cfg.gate2_width_ms = self.ss_g2_width.value()

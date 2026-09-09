@@ -20,7 +20,7 @@ class ScanConfig:
     
     # Timing limits (ms)
     scan_time_ms: float = 100.0          # Max spectral time window (0 - 100 ms)
-    auto_trigger_period_ms: float = 105.0 # Test mode trigger rate (scan time + buffer)
+    auto_trigger_period_ms: float = 250.0 # Test mode trigger interval
     
     # Gate 1 Parameters
     gate1_width_ms: float = 0.2          # Default 0.2 ms
