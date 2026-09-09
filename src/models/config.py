@@ -39,7 +39,8 @@ class ScanConfig:
     device_name: str = "Dev1"
     external_trigger_terminal: str = "/Dev1/PFI0"
     gate1_counter: str = "ctr0"          # Output pin default PFI12
-    gate2_counter: str = "ctr1"          # Output pin default PFI13
+    delay_counter: str = "ctr2"          # Delay-stage output pin default PFI14
+    gate2_counter: str = "ctr1"          # Gate 2 output pin default PFI13
 
     def validate(self) -> tuple[bool, str]:
         """Validate parameter boundaries and timing constraints."""
