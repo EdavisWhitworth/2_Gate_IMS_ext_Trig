@@ -102,15 +102,24 @@ class NIDAQController(AbstractDAQController):
                     self._on_hardware_trigger
                 )
 
-            if config.mode == OperationalMode.SWEEP:
-                # Sweep Mode uses the additional counter as a delay stage.
+            if config.mode in (OperationalMode.WINDOWED, OperationalMode.SWEEP):
+                # Windowed and Sweep modes use the additional counter as a
+                # hardware delay stage; their timing behavior remains separate.
                 self._task_delay = nidaqmx.Task("Gate2_Delay_CTR2_Task")
                 self._task_delay.co_channels.add_co_pulse_chan_time(
                     counter=f"{dev}/{config.delay_counter}",
                     units=TimeUnits.SECONDS,
                     idle_state=Level.LOW,
-                    initial_delay=g2_delay_sec,
-                    low_time=0.0001,
+                    initial_delay=(
+                        0.000001
+                        if config.mode == OperationalMode.WINDOWED
+                        else g2_delay_sec
+                    ),
+                    low_time=(
+                        g2_delay_sec
+                        if config.mode == OperationalMode.WINDOWED
+                        else 0.0001
+                    ),
                     high_time=0.0001
                 )
                 self._task_delay.timing.cfg_implicit_timing(
@@ -133,7 +142,7 @@ class NIDAQController(AbstractDAQController):
                 initial_delay=(
                     0.000001
                     if config.mode == OperationalMode.SWEEP
-                    else g2_delay_sec
+                    else 0.000001
                 ),
                 low_time=0.0001,
                 high_time=g2_width_sec
@@ -148,7 +157,7 @@ class NIDAQController(AbstractDAQController):
             self._task_g2.triggers.start_trigger.cfg_dig_edge_start_trig(
                 trigger_source=(
                     f"/{dev}/{config.delay_counter}InternalOutput"
-                    if config.mode == OperationalMode.SWEEP
+                    if config.mode in (OperationalMode.WINDOWED, OperationalMode.SWEEP)
                     else f"/{dev}/{config.gate1_counter}InternalOutput"
                 ),
                 trigger_edge=Edge.RISING
@@ -237,10 +246,31 @@ class NIDAQController(AbstractDAQController):
 
             self._task_g2.stop()
             if config.mode == OperationalMode.WINDOWED:
-                self._task_g2.control(TaskMode.TASK_UNRESERVE)
-                self._task_g2.co_channels[0].co_pulse_time_initial_delay = delay_sec
+                self._task_delay.stop()
+                self._task_delay.close()
+                dev = config.device_name
+                self._task_delay = nidaqmx.Task("Gate2_Delay_CTR2_Task")
+                self._task_delay.co_channels.add_co_pulse_chan_time(
+                    counter=f"{dev}/{config.delay_counter}",
+                    units=TimeUnits.SECONDS,
+                    idle_state=Level.LOW,
+                    initial_delay=0.000001,
+                    low_time=delay_sec,
+                    high_time=0.0001
+                )
+                self._task_delay.timing.cfg_implicit_timing(
+                    sample_mode=AcquisitionType.FINITE,
+                    samps_per_chan=1
+                )
+                self._task_delay.triggers.start_trigger.cfg_dig_edge_start_trig(
+                    trigger_source=f"/{dev}/{config.gate1_counter}InternalOutput",
+                    trigger_edge=Edge.RISING
+                )
+                self._task_delay.triggers.start_trigger.retriggerable = True
+                self._task_delay.control(TaskMode.TASK_COMMIT)
                 self._task_g2.control(TaskMode.TASK_COMMIT)
                 self._task_g2.start()
+                self._task_delay.start()
                 if gate1_was_running:
                     self._task_g1.start()
                 return True
