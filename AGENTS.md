@@ -17,14 +17,15 @@ PyQt6 desktop control GUI for a two-gate ion mobility spectrometry (IMS) system.
 - `src/models/config.py`: `ScanConfig` dataclass, `OperationalMode`, validation, and sweep-delay generation. Timing values are milliseconds.
 - `src/hardware/daq_interface.py`: `AbstractDAQController` contract and Qt signal bridge. Controllers expose `start_session`, `stop_session`, `update_gate2_delay`, `update_config`, and `trigger_software`.
 - `src/hardware/mock_daq_controller.py`: hardware-free implementation. In Test Mode, a `QTimer` emits simulated triggers using `auto_trigger_period_ms`.
-- `src/hardware/ni_daq_controller.py`: NI-DAQmx implementation. Counter 0 generates Gate 1; Counter 1 is triggered by Counter 0 internal output and generates Gate 2. Tasks are started Gate 2 first, then Gate 1.
+- `src/hardware/ni_daq_controller.py`: NI-DAQmx implementation. Gate 1 uses `ctr0`, the additional delay stage uses `ctr2`, and Gate 2 uses `ctr1`. Windowed and Sweep modes select different timing paths inside the controller. External-mode Gate 1 output events are forwarded to the GUI for sweep progression.
 - `src/gui/styles.py`: application QSS theme.
 
 ## Modes
 
-- **Windowed**: Gate 2 uses one `gate2_delay_ms`; delay can be updated while running.
+- **Windowed**: Gate 2 uses the `ctr2` delay stage and one `gate2_delay_ms`; in Test Mode the delay is applied as the delay-stage task's initial delay on each software restart.
 - **Sweep**: `MainWindow` obtains `ScanConfig.get_sweep_delays()`, holds each delay for `sweep_dwell_count` triggers, then calls `update_gate2_delay`. The sweep stops automatically after the final step.
-- **Test Mode** enables timer-generated trigger events. Without it, the NI controller arms Gate 1 on `external_trigger_terminal` (default `/Dev1/PFI0`).
+- **Test Mode** enables timer-generated trigger events at `auto_trigger_period_ms` (default 250 ms). The controller restarts the required finite tasks for each simulated pulse. Without it, Gate 1 arms on `external_trigger_terminal` (default `/Dev1/PFI0`).
+- Sweep external callbacks are debounced over most of `scan_time_ms` so one hardware generation advances the GUI once.
 
 ## Development Rules
 
@@ -40,8 +41,8 @@ From the repository root, install dependencies with `python -m pip install -r re
 
 There are currently no automated tests in the repository. Changes affecting sweep progression, signal handling, or DAQ task setup should be manually checked in Mock DAQ mode and, when available, on NI hardware.
 
-## Additional-Counter Branch
+## Counter Routing and Wiring
 
-The `additional-counters` branch uses three counters: `ctr0` for Gate 1, `ctr2` as the delayed timing stage, and `ctr1` for Gate 2. On an NI-6341/USB-6341-style X-Series device, the default counter output PFI terminals are typically `ctr0 -> PFI12`, `ctr1 -> PFI13`, `ctr2 -> PFI14`, and `ctr3 -> PFI15`; verify the exact device pinout before wiring.
+The V1.0 controller uses three counters: `ctr0` for Gate 1, `ctr2` as the delayed timing stage, and `ctr1` for Gate 2. On an NI-6341/USB-6341-style X-Series device, the default counter output PFI terminals are typically `ctr0 -> PFI12`, `ctr1 -> PFI13`, `ctr2 -> PFI14`, and `ctr3 -> PFI15`; verify the exact device pinout before wiring.
 
 Required signal routing is internal in DAQmx: Gate 1 (`ctr0InternalOutput`) triggers the delay stage (`ctr2`), and the delay stage (`ctr2InternalOutput`) triggers Gate 2 (`ctr1`). The external trigger remains `/Dev1/PFI0` into Gate 1. Connect the physical outputs as `PFI12` for Gate 1 and `PFI13` for Gate 2; `PFI14` is the optional exposed delay-stage output for probing, while the internal routes should be used for counter-to-counter triggering.
