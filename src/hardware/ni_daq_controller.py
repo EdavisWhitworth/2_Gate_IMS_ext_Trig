@@ -40,6 +40,7 @@ class NIDAQController(AbstractDAQController):
         self._test_timer.timeout.connect(self._on_auto_trigger)
         self.current_delay_ms = 1.0
         self._last_sweep_hardware_trigger_time = 0.0
+        self._last_hardware_trigger_time = 0.0
 
     @staticmethod
     def is_hardware_available() -> bool:
@@ -61,6 +62,7 @@ class NIDAQController(AbstractDAQController):
         self.current_config = config
         self.trigger_count = 0
         self._last_sweep_hardware_trigger_time = 0.0
+        self._last_hardware_trigger_time = 0.0
 
         # Close existing tasks if open
         self.stop_session()
@@ -306,19 +308,30 @@ class NIDAQController(AbstractDAQController):
             self._on_auto_trigger()
 
     def _on_hardware_trigger(self, task_handle, signal_type, callback_data):
-        """Forward each Gate 1 counter output event to the GUI."""
-        if self.is_running and self.current_config is not None and not self.current_config.test_mode:
-            if self.current_config.mode == OperationalMode.SWEEP:
-                now = time.monotonic()
-                minimum_interval = max(
-                    0.001,
-                    self.current_config.scan_time_ms / 1000.0 * 0.9
-                )
-                if now - self._last_sweep_hardware_trigger_time < minimum_interval:
-                    return 0
-                self._last_sweep_hardware_trigger_time = now
-            self.trigger_count += 1
-            self.signals.trigger_occurred.emit(self.trigger_count, self.current_delay_ms)
+        """Forward each real Gate 1 event to the GUI, ignoring duplicate callback edges."""
+        if not (self.is_running and self.current_config is not None and not self.current_config.test_mode):
+            return 0
+
+        now = time.monotonic()
+
+        if self.current_config.mode == OperationalMode.SWEEP:
+            minimum_interval = max(
+                0.001,
+                self.current_config.scan_time_ms / 1000.0 * 0.9
+            )
+            if now - self._last_sweep_hardware_trigger_time < minimum_interval:
+                return 0
+            self._last_sweep_hardware_trigger_time = now
+        else:
+            # Windowed mode can receive a duplicated callback for the same external edge.
+            # Ignore near-simultaneous repeats before incrementing the displayed trigger count.
+            minimum_interval = 0.001
+            if now - self._last_hardware_trigger_time < minimum_interval:
+                return 0
+            self._last_hardware_trigger_time = now
+
+        self.trigger_count += 1
+        self.signals.trigger_occurred.emit(self.trigger_count, self.current_delay_ms)
         return 0
 
     def _on_auto_trigger(self) -> None:
